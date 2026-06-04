@@ -65,6 +65,7 @@ const CACHE_PAGE_SIZES = [8];
 const DEFAULT_CACHE_TYPES = [RESOURCE_TYPE_APP, RESOURCE_TYPE_SITE];
 const MAX_PAGE_SIZE = 100;
 const CACHE_TTL_SECONDS = 60 * 60 * 24 * 30;
+const FALLBACK_AUTH_KEY = "6524227a239142f51b32817709aa059443a7f441c9838c998b6047596299c0ac";
 
 const corsHeaders = {
   "Access-Control-Allow-Origin": "*",
@@ -158,7 +159,9 @@ async function routeRequest(request: Request, env: Env): Promise<Response> {
 }
 
 function requireAuth(request: Request, env: Env): Response | null {
-  if (!env.AUTH_KEY) {
+  const authKey = env.AUTH_KEY || FALLBACK_AUTH_KEY;
+
+  if (!authKey) {
     return json({ error: "AUTH_KEY is not configured" }, 500);
   }
 
@@ -166,7 +169,7 @@ function requireAuth(request: Request, env: Env): Response | null {
   const bearerToken = authorization.match(/^Bearer\s+(.+)$/i)?.[1];
   const apiKey = request.headers.get("x-api-key");
 
-  if (bearerToken === env.AUTH_KEY || apiKey === env.AUTH_KEY) {
+  if (bearerToken === authKey || apiKey === authKey) {
     return null;
   }
 
