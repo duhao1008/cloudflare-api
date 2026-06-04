@@ -42,6 +42,7 @@ type ResourceInput = {
 
 const DEFAULT_PAGE_SIZE = 20;
 const CACHE_PAGE_SIZES = [10, 20, 50, 100];
+const DEFAULT_CACHE_TYPES = [0, 1];
 const MAX_PAGE_SIZE = 100;
 const CACHE_TTL_SECONDS = 60 * 60 * 24 * 30;
 
@@ -218,7 +219,7 @@ async function rebuildPaginationCache(env: Env, touchedTypes: number[] = []): Pr
     "SELECT * FROM resources ORDER BY sort_order ASC, update_time DESC, id DESC"
   ).all<ResourceRow>();
   const items = rows.results.map(toApiResource);
-  const types = new Set([...items.map((item) => item.type), ...touchedTypes]);
+  const types = new Set([...DEFAULT_CACHE_TYPES, ...items.map((item) => item.type), ...touchedTypes]);
 
   await Promise.all([
     ...CACHE_PAGE_SIZES.map((pageSize) => writePagesForSize(env, items, pageSize, null)),
