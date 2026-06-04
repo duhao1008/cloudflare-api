@@ -61,7 +61,7 @@ type ImportResource = {
 const RESOURCE_TYPE_APP = 1;
 const RESOURCE_TYPE_SITE = 2;
 const DEFAULT_PAGE_SIZE = 8;
-const CACHE_PAGE_SIZES = [8, 16, 24, 40, 80];
+const CACHE_PAGE_SIZES = [8];
 const DEFAULT_CACHE_TYPES = [RESOURCE_TYPE_APP, RESOURCE_TYPE_SITE];
 const MAX_PAGE_SIZE = 100;
 const CACHE_TTL_SECONDS = 60 * 60 * 24 * 30;
@@ -224,19 +224,14 @@ async function createResource(request: Request, env: Env): Promise<Response> {
   const type = input.type ?? RESOURCE_TYPE_SITE;
   const status = input.status ?? 0;
   const sortOrder = input.sort_order ?? input.sortOrder ?? 0;
-  const result = await env.DB.prepare(
-    `INSERT INTO resources (resource_id, type, name, status, sort_order, json, create_time, update_time)
-     VALUES (?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
-     ON CONFLICT(resource_id, type) DO UPDATE SET
-       name = excluded.name,
-       status = excluded.status,
-       sort_order = excluded.sort_order,
-       json = excluded.json,
-       update_time = CURRENT_TIMESTAMP
-     RETURNING *`
-  )
-    .bind(resourceId, type, input.name, status, sortOrder, stringifyJson(input.json ?? null))
-    .first<ResourceRow>();
+  const result = await upsertResource(env, {
+    resourceId: resourceId as number,
+    type,
+    name: input.name,
+    status,
+    sortOrder,
+    json: input.json ?? null
+  });
 
   await rebuildPaginationCache(env, [type]);
 
@@ -260,27 +255,10 @@ async function importResources(request: Request, env: Env): Promise<Response> {
     return json({ error: "Request body must include apps or subsites" }, 400);
   }
 
-  const statements = resources.map((resource) =>
-    env.DB.prepare(
-      `INSERT INTO resources (resource_id, type, name, status, sort_order, json, create_time, update_time)
-       VALUES (?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
-       ON CONFLICT(resource_id, type) DO UPDATE SET
-         name = excluded.name,
-         status = excluded.status,
-         sort_order = excluded.sort_order,
-         json = excluded.json,
-         update_time = CURRENT_TIMESTAMP`
-    ).bind(
-      resource.resourceId,
-      resource.type,
-      resource.name,
-      resource.status,
-      resource.sortOrder,
-      stringifyJson(resource.json)
-    )
-  );
+  for (const resource of resources) {
+    await upsertResource(env, resource);
+  }
 
-  await env.DB.batch(statements);
   await rebuildPaginationCache(env, [RESOURCE_TYPE_APP, RESOURCE_TYPE_SITE]);
 
   return json({
@@ -289,6 +267,40 @@ async function importResources(request: Request, env: Env): Promise<Response> {
     apps: resources.filter((resource) => resource.type === RESOURCE_TYPE_APP).length,
     sites: resources.filter((resource) => resource.type === RESOURCE_TYPE_SITE).length
   });
+}
+
+async function upsertResource(env: Env, resource: ImportResource): Promise<ResourceRow> {
+  const existing = await env.DB.prepare(
+    "SELECT id FROM resources WHERE resource_id = ? AND type = ? ORDER BY id ASC LIMIT 1"
+  )
+    .bind(resource.resourceId, resource.type)
+    .first<{ id: number }>();
+
+  if (existing) {
+    return (await env.DB.prepare(
+      `UPDATE resources
+       SET name = ?, status = ?, sort_order = ?, json = ?, update_time = CURRENT_TIMESTAMP
+       WHERE id = ?
+       RETURNING *`
+    )
+      .bind(resource.name, resource.status, resource.sortOrder, stringifyJson(resource.json), existing.id)
+      .first<ResourceRow>()) as ResourceRow;
+  }
+
+  return (await env.DB.prepare(
+    `INSERT INTO resources (resource_id, type, name, status, sort_order, json, create_time, update_time)
+     VALUES (?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+     RETURNING *`
+  )
+    .bind(
+      resource.resourceId,
+      resource.type,
+      resource.name,
+      resource.status,
+      resource.sortOrder,
+      stringifyJson(resource.json)
+    )
+    .first<ResourceRow>()) as ResourceRow;
 }
 
 async function updateResource(id: number, request: Request, env: Env): Promise<Response> {

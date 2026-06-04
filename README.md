@@ -128,4 +128,4 @@ Deploy:
 npm run deploy
 ```
 
-KV page cache is rebuilt after every create, update, delete, and import for page sizes `8`, `16`, `24`, `40`, and `80`.
+KV page cache is rebuilt after every create, update, delete, and import for page size `8`.
