@@ -6,6 +6,7 @@
   "scripts": {
     "dev": "wrangler dev",
     "deploy": "wrangler deploy",
+    "import:json": "node scripts/import-root-json.mjs",
     "db:migrate:local": "wrangler d1 migrations apply cloudflare_api_db --local",
     "db:migrate": "wrangler d1 migrations apply cloudflare_api_db",
     "typecheck": "tsc --noEmit"

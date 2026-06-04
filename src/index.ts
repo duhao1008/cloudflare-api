@@ -41,16 +41,35 @@ type ResourceInput = {
   json?: JsonValue;
 };
 
-const DEFAULT_PAGE_SIZE = 20;
-const CACHE_PAGE_SIZES = [10, 20, 50, 100];
-const DEFAULT_CACHE_TYPES = [0, 1];
+type AppListInput = {
+  apps?: unknown[];
+};
+
+type SiteListInput = {
+  subsites?: unknown[];
+};
+
+type ImportResource = {
+  resourceId: number;
+  type: number;
+  name: string;
+  status: number;
+  sortOrder: number;
+  json: JsonValue;
+};
+
+const RESOURCE_TYPE_APP = 1;
+const RESOURCE_TYPE_SITE = 2;
+const DEFAULT_PAGE_SIZE = 8;
+const CACHE_PAGE_SIZES = [8, 16, 24, 40, 80];
+const DEFAULT_CACHE_TYPES = [RESOURCE_TYPE_APP, RESOURCE_TYPE_SITE];
 const MAX_PAGE_SIZE = 100;
 const CACHE_TTL_SECONDS = 60 * 60 * 24 * 30;
 
 const corsHeaders = {
   "Access-Control-Allow-Origin": "*",
   "Access-Control-Allow-Methods": "GET,POST,PUT,PATCH,DELETE,OPTIONS",
-  "Access-Control-Allow-Headers": "Content-Type,Authorization"
+  "Access-Control-Allow-Headers": "Content-Type,Authorization,X-API-Key"
 };
 
 export default {
@@ -97,6 +116,15 @@ async function routeRequest(request: Request, env: Env): Promise<Response> {
     }
 
     return createResource(request, env);
+  }
+
+  if (request.method === "POST" && pathname === "/resources/import") {
+    const authResponse = requireAuth(request, env);
+    if (authResponse) {
+      return authResponse;
+    }
+
+    return importResources(request, env);
   }
 
   const resourceMatch = pathname.match(/^\/resources\/(\d+)$/);
@@ -193,12 +221,18 @@ async function createResource(request: Request, env: Env): Promise<Response> {
     return json({ error: "name is required" }, 400);
   }
 
-  const type = input.type ?? 0;
+  const type = input.type ?? RESOURCE_TYPE_SITE;
   const status = input.status ?? 0;
   const sortOrder = input.sort_order ?? input.sortOrder ?? 0;
   const result = await env.DB.prepare(
     `INSERT INTO resources (resource_id, type, name, status, sort_order, json, create_time, update_time)
      VALUES (?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+     ON CONFLICT(resource_id, type) DO UPDATE SET
+       name = excluded.name,
+       status = excluded.status,
+       sort_order = excluded.sort_order,
+       json = excluded.json,
+       update_time = CURRENT_TIMESTAMP
      RETURNING *`
   )
     .bind(resourceId, type, input.name, status, sortOrder, stringifyJson(input.json ?? null))
@@ -207,6 +241,54 @@ async function createResource(request: Request, env: Env): Promise<Response> {
   await rebuildPaginationCache(env, [type]);
 
   return json({ item: toApiResource(result as ResourceRow) }, 201);
+}
+
+async function importResources(request: Request, env: Env): Promise<Response> {
+  const contentType = request.headers.get("content-type") ?? "";
+
+  if (!contentType.includes("application/json")) {
+    throw new Error("Content-Type must be application/json");
+  }
+
+  const body = (await request.json()) as AppListInput & SiteListInput;
+  const resources = [
+    ...(body.apps ?? []).map((item) => toImportResource(item, RESOURCE_TYPE_APP)),
+    ...(body.subsites ?? []).map((item) => toImportResource(item, RESOURCE_TYPE_SITE))
+  ];
+
+  if (resources.length === 0) {
+    return json({ error: "Request body must include apps or subsites" }, 400);
+  }
+
+  const statements = resources.map((resource) =>
+    env.DB.prepare(
+      `INSERT INTO resources (resource_id, type, name, status, sort_order, json, create_time, update_time)
+       VALUES (?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+       ON CONFLICT(resource_id, type) DO UPDATE SET
+         name = excluded.name,
+         status = excluded.status,
+         sort_order = excluded.sort_order,
+         json = excluded.json,
+         update_time = CURRENT_TIMESTAMP`
+    ).bind(
+      resource.resourceId,
+      resource.type,
+      resource.name,
+      resource.status,
+      resource.sortOrder,
+      stringifyJson(resource.json)
+    )
+  );
+
+  await env.DB.batch(statements);
+  await rebuildPaginationCache(env, [RESOURCE_TYPE_APP, RESOURCE_TYPE_SITE]);
+
+  return json({
+    ok: true,
+    imported: resources.length,
+    apps: resources.filter((resource) => resource.type === RESOURCE_TYPE_APP).length,
+    sites: resources.filter((resource) => resource.type === RESOURCE_TYPE_SITE).length
+  });
 }
 
 async function updateResource(id: number, request: Request, env: Env): Promise<Response> {
@@ -337,6 +419,48 @@ function toApiResource(row: ResourceRow): ApiResource {
     createTime: row.create_time,
     updateTime: row.update_time
   };
+}
+
+function toImportResource(item: unknown, type: number): ImportResource {
+  if (!isJsonObject(item)) {
+    throw new Error("Import items must be objects");
+  }
+
+  const resourceIdValue = type === RESOURCE_TYPE_APP ? toNumber(item.appleId) : toNumber(item.mainId);
+  const nameValue = type === RESOURCE_TYPE_APP ? item.displayName : item.siteName;
+  const name = typeof nameValue === "string" && nameValue ? nameValue : String(resourceIdValue);
+  const status = toNumber(item.status) ?? 0;
+  const sortOrder = toNumber(item.sort_order) ?? toNumber(item.sortOrder) ?? 0;
+
+  if (resourceIdValue === undefined || !Number.isInteger(resourceIdValue)) {
+    throw new Error(type === RESOURCE_TYPE_APP ? "App item appleId is required" : "Site item mainId is required");
+  }
+
+  return {
+    resourceId: resourceIdValue,
+    type,
+    name,
+    status,
+    sortOrder,
+    json: item as JsonValue
+  };
+}
+
+function isJsonObject(value: unknown): value is { [key: string]: JsonValue } {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function toNumber(value: unknown): number | undefined {
+  if (typeof value === "number" && Number.isFinite(value)) {
+    return value;
+  }
+
+  if (typeof value === "string" && value.trim() !== "") {
+    const parsed = Number(value);
+    return Number.isFinite(parsed) ? parsed : undefined;
+  }
+
+  return undefined;
 }
 
 function parseJson(value: string | null): JsonValue {

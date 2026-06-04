@@ -12,3 +12,4 @@ CREATE TABLE IF NOT EXISTS resources (
 
 CREATE INDEX IF NOT EXISTS idx_resources_type_sort ON resources (type, sort_order, update_time DESC, id DESC);
 CREATE INDEX IF NOT EXISTS idx_resources_resource_id ON resources (resource_id);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_resources_resource_type ON resources (resource_id, type);
