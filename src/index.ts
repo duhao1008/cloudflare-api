@@ -1,6 +1,7 @@
 export interface Env {
   DB: D1Database;
   CACHE: KVNamespace;
+  AUTH_KEY: string;
 }
 
 type JsonValue = null | boolean | number | string | JsonValue[] | { [key: string]: JsonValue };
@@ -76,6 +77,11 @@ async function routeRequest(request: Request, env: Env): Promise<Response> {
   }
 
   if (request.method === "POST" && pathname === "/cache/rebuild") {
+    const authResponse = requireAuth(request, env);
+    if (authResponse) {
+      return authResponse;
+    }
+
     await rebuildPaginationCache(env);
     return json({ ok: true });
   }
@@ -85,6 +91,11 @@ async function routeRequest(request: Request, env: Env): Promise<Response> {
   }
 
   if (request.method === "POST" && pathname === "/resources") {
+    const authResponse = requireAuth(request, env);
+    if (authResponse) {
+      return authResponse;
+    }
+
     return createResource(request, env);
   }
 
@@ -97,15 +108,41 @@ async function routeRequest(request: Request, env: Env): Promise<Response> {
     }
 
     if (request.method === "PUT" || request.method === "PATCH") {
+      const authResponse = requireAuth(request, env);
+      if (authResponse) {
+        return authResponse;
+      }
+
       return updateResource(id, request, env);
     }
 
     if (request.method === "DELETE") {
+      const authResponse = requireAuth(request, env);
+      if (authResponse) {
+        return authResponse;
+      }
+
       return deleteResource(id, env);
     }
   }
 
   return json({ error: "Not found" }, 404);
+}
+
+function requireAuth(request: Request, env: Env): Response | null {
+  if (!env.AUTH_KEY) {
+    return json({ error: "AUTH_KEY is not configured" }, 500);
+  }
+
+  const authorization = request.headers.get("authorization") ?? "";
+  const bearerToken = authorization.match(/^Bearer\s+(.+)$/i)?.[1];
+  const apiKey = request.headers.get("x-api-key");
+
+  if (bearerToken === env.AUTH_KEY || apiKey === env.AUTH_KEY) {
+    return null;
+  }
+
+  return json({ error: "Unauthorized" }, 401);
 }
 
 async function listResources(url: URL, env: Env): Promise<Response> {

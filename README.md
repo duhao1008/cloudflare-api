@@ -13,6 +13,20 @@ Cloudflare Worker API using D1 `resources` as source data and KV for paginated r
 - `DELETE /resources/:id` deletes from D1, then rebuilds KV page cache
 - `POST /cache/rebuild` rebuilds KV page cache from existing D1 data
 
+Write endpoints require authentication. Public pagination endpoints do not.
+
+Use either header:
+
+```bash
+Authorization: Bearer <AUTH_KEY>
+```
+
+or:
+
+```bash
+X-API-Key: <AUTH_KEY>
+```
+
 Request body for create/update:
 
 ```json
@@ -39,6 +53,12 @@ npx wrangler kv namespace create CACHE
 ```
 
 Copy the generated `database_id` and KV `id` into `wrangler.toml`.
+
+Set the production auth secret:
+
+```bash
+npx wrangler secret put AUTH_KEY
+```
 
 Apply D1 schema:
 
