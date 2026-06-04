@@ -1,0 +1,18 @@
+{
+  "name": "cloudflare-api",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "wrangler dev",
+    "deploy": "wrangler deploy",
+    "db:migrate:local": "wrangler d1 migrations apply cloudflare_api_db --local",
+    "db:migrate": "wrangler d1 migrations apply cloudflare_api_db",
+    "typecheck": "tsc --noEmit"
+  },
+  "devDependencies": {
+    "@cloudflare/workers-types": "^4.20260601.0",
+    "typescript": "^5.8.3",
+    "wrangler": "^4.20.0"
+  }
+}

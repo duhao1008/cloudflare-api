@@ -1,0 +1,13 @@
+name = "cloudflare-api"
+main = "src/index.ts"
+compatibility_date = "2026-06-04"
+compatibility_flags = ["nodejs_compat"]
+
+[[d1_databases]]
+binding = "DB"
+database_name = "dh2026"
+database_id = "13f59951-53dc-4399-aba4-425ecdb32baf"
+
+[[kv_namespaces]]
+binding = "CACHE"
+id = "2c04bdcce63a41938a75d0ebda967777"
