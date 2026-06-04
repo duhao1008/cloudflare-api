@@ -1,21 +1,24 @@
 # cloudflare-api
 
-Cloudflare Worker API using D1 `resources` as source data and KV for paginated read cache.
+Cloudflare Worker API using D1 `resources` as source data.
 
 ## Endpoints
 
 - `GET /health`
-- `GET /resources?page=1&pageSize=8` reads paginated data from KV only
-- `GET /resources?page=1&pageSize=8&type=1` reads app data from KV only
-- `GET /resources?page=1&pageSize=8&type=2` reads site data from KV only
+- `GET /resources?page=1` reads paginated data from D1, page size is fixed to 8
+- `GET /resources?page=1&type=1` reads app data from D1
+- `GET /resources?page=1&type=2` reads site data from D1
+- `GET /resources/search?keyword=xxx&page=1` searches `name` and `json` from D1, page size is fixed to 8
+- `GET /resources/search?keyword=xxx&page=1&type=1` searches app data
+- `GET /resources/search?keyword=xxx&page=1&type=2` searches site data
 - `GET /resources/:id` reads one resource from D1
-- `POST /resources` creates a resource in D1, then rebuilds KV page cache
-- `PUT /resources/:id` or `PATCH /resources/:id` updates resource data in D1, then rebuilds KV page cache
-- `DELETE /resources/:id` deletes from D1, then rebuilds KV page cache
-- `POST /resources/import` imports `app_list.json`/`site_list.json` style data, then rebuilds KV page cache
-- `POST /cache/rebuild` rebuilds KV page cache from existing D1 data
+- `POST /resources` creates or updates a resource in D1
+- `PUT /resources/:id` or `PATCH /resources/:id` updates resource data in D1
+- `DELETE /resources/:id` deletes from D1
+- `POST /resources/import` imports `app_list.json`/`site_list.json` style data into D1
+- `POST /cache/rebuild` is kept for compatibility, but pagination cache is disabled
 
-Write endpoints require authentication. Public pagination endpoints do not.
+Write endpoints require authentication. Public pagination and search endpoints do not.
 
 Use either header:
 
@@ -84,7 +87,7 @@ npx wrangler d1 create cloudflare_api_db
 npx wrangler kv namespace create CACHE
 ```
 
-Copy the generated `database_id` and KV `id` into `wrangler.toml`.
+Copy the generated `database_id` into `wrangler.toml`. The KV binding may stay in `wrangler.toml` for compatibility, but it is not used by pagination/search.
 
 Set the production auth secret:
 
@@ -98,7 +101,7 @@ Apply D1 schema:
 npm run db:migrate
 ```
 
-If the `resources` table already exists, you can skip the migration and run `POST /cache/rebuild` once after deploy/dev starts.
+If the `resources` table already exists, you can skip the migration.
 
 Local development:
 
@@ -127,5 +130,3 @@ Deploy:
 ```bash
 npm run deploy
 ```
-
-KV page cache is rebuilt after every create, update, delete, and import for page size `8`.

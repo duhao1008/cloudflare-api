@@ -61,10 +61,6 @@ type ImportResource = {
 const RESOURCE_TYPE_APP = 1;
 const RESOURCE_TYPE_SITE = 2;
 const DEFAULT_PAGE_SIZE = 8;
-const CACHE_PAGE_SIZES = [8];
-const DEFAULT_CACHE_TYPES = [RESOURCE_TYPE_APP, RESOURCE_TYPE_SITE];
-const MAX_PAGE_SIZE = 100;
-const CACHE_TTL_SECONDS = 60 * 60 * 24 * 30;
 const FALLBACK_AUTH_KEY = "6524227a239142f51b32817709aa059443a7f441c9838c998b6047596299c0ac";
 
 const corsHeaders = {
@@ -102,12 +98,15 @@ async function routeRequest(request: Request, env: Env): Promise<Response> {
       return authResponse;
     }
 
-    await rebuildPaginationCache(env);
-    return json({ ok: true });
+    return json({ ok: true, skipped: true, message: "Pagination cache is disabled; resources are queried from D1." });
   }
 
   if (request.method === "GET" && pathname === "/resources") {
     return listResources(url, env);
+  }
+
+  if (request.method === "GET" && pathname === "/resources/search") {
+    return searchResources(url, env);
   }
 
   if (request.method === "POST" && pathname === "/resources") {
@@ -178,28 +177,66 @@ function requireAuth(request: Request, env: Env): Response | null {
 
 async function listResources(url: URL, env: Env): Promise<Response> {
   const page = parsePositiveInt(url.searchParams.get("page"), 1);
-  const requestedPageSize = parsePositiveInt(url.searchParams.get("pageSize"), DEFAULT_PAGE_SIZE);
-  const pageSize = Math.min(requestedPageSize, MAX_PAGE_SIZE);
+  const pageSize = DEFAULT_PAGE_SIZE;
   const type = parseOptionalInt(url.searchParams.get("type"));
-  const meta = await env.CACHE.get<CacheMeta>(metaCacheKey(type, pageSize), "json");
+  const offset = (page - 1) * pageSize;
+  const where = type === null ? "" : "WHERE type = ?";
+  const countStatement = env.DB.prepare(`SELECT COUNT(*) AS total FROM resources ${where}`);
+  const listStatement = env.DB.prepare(
+    `SELECT * FROM resources
+     ${where}
+     ORDER BY sort_order ASC, update_time DESC, id DESC
+     LIMIT ? OFFSET ?`
+  );
+  const countParams = type === null ? [] : [type];
+  const totalRow = await countStatement.bind(...countParams).first<{ total: number }>();
+  const total = totalRow?.total ?? 0;
+  const totalPages = Math.max(1, Math.ceil(total / pageSize));
 
-  if (meta && page > meta.totalPages) {
-    return json(emptyPage(page, pageSize, meta.total, meta.totalPages));
+  if (page > totalPages) {
+    return json(emptyPage(page, pageSize, total, totalPages));
   }
 
-  const cached = await env.CACHE.get(pageCacheKey(type, page, pageSize), "json");
+  const rows = await listStatement.bind(...countParams, pageSize, offset).all<ResourceRow>();
+  return json(toPageResponse(rows.results, page, pageSize, total));
+}
 
-  if (!cached) {
-    return json(
-      {
-        error: "Page cache not found",
-        hint: "Call POST /cache/rebuild once after binding an existing D1 table."
-      },
-      404
-    );
+async function searchResources(url: URL, env: Env): Promise<Response> {
+  const keyword = (url.searchParams.get("keyword") ?? "").trim();
+
+  if (!keyword) {
+    return json({ error: "keyword is required" }, 400);
   }
 
-  return json(cached);
+  const page = parsePositiveInt(url.searchParams.get("page"), 1);
+  const pageSize = DEFAULT_PAGE_SIZE;
+  const type = parseOptionalInt(url.searchParams.get("type"));
+  const offset = (page - 1) * pageSize;
+  const like = `%${keyword}%`;
+  const where = type === null
+    ? "WHERE (name LIKE ? OR json LIKE ?)"
+    : "WHERE type = ? AND (name LIKE ? OR json LIKE ?)";
+  const searchParams = type === null ? [like, like] : [type, like, like];
+  const totalRow = await env.DB.prepare(`SELECT COUNT(*) AS total FROM resources ${where}`)
+    .bind(...searchParams)
+    .first<{ total: number }>();
+  const total = totalRow?.total ?? 0;
+  const totalPages = Math.max(1, Math.ceil(total / pageSize));
+
+  if (page > totalPages) {
+    return json(emptyPage(page, pageSize, total, totalPages));
+  }
+
+  const rows = await env.DB.prepare(
+    `SELECT * FROM resources
+     ${where}
+     ORDER BY sort_order ASC, update_time DESC, id DESC
+     LIMIT ? OFFSET ?`
+  )
+    .bind(...searchParams, pageSize, offset)
+    .all<ResourceRow>();
+
+  return json(toPageResponse(rows.results, page, pageSize, total));
 }
 
 async function getResource(id: number, env: Env): Promise<Response> {
@@ -236,8 +273,6 @@ async function createResource(request: Request, env: Env): Promise<Response> {
     json: input.json ?? null
   });
 
-  await rebuildPaginationCache(env, [type]);
-
   return json({ item: toApiResource(result as ResourceRow) }, 201);
 }
 
@@ -261,8 +296,6 @@ async function importResources(request: Request, env: Env): Promise<Response> {
   for (const resource of resources) {
     await upsertResource(env, resource);
   }
-
-  await rebuildPaginationCache(env, [RESOURCE_TYPE_APP, RESOURCE_TYPE_SITE]);
 
   return json({
     ok: true,
@@ -330,8 +363,6 @@ async function updateResource(id: number, request: Request, env: Env): Promise<R
     .bind(nextResourceId, nextType, nextName, nextStatus, nextSortOrder, stringifyJson(nextJson), id)
     .first<ResourceRow>();
 
-  await rebuildPaginationCache(env, [existing.type, nextType]);
-
   return json({ item: toApiResource(result as ResourceRow) });
 }
 
@@ -343,73 +374,23 @@ async function deleteResource(id: number, env: Env): Promise<Response> {
   }
 
   await env.DB.prepare("DELETE FROM resources WHERE id = ?").bind(id).run();
-  await rebuildPaginationCache(env, [existing.type]);
 
   return json({ ok: true });
 }
 
-async function rebuildPaginationCache(env: Env, touchedTypes: number[] = []): Promise<void> {
-  const rows = await env.DB.prepare(
-    "SELECT * FROM resources ORDER BY sort_order ASC, update_time DESC, id DESC"
-  ).all<ResourceRow>();
-  const items = rows.results.map(toApiResource);
-  const types = new Set([...DEFAULT_CACHE_TYPES, ...items.map((item) => item.type), ...touchedTypes]);
-
-  await Promise.all([
-    ...CACHE_PAGE_SIZES.map((pageSize) => writePagesForSize(env, items, pageSize, null)),
-    ...Array.from(types).flatMap((type) => {
-      const typedItems = items.filter((item) => item.type === type);
-      return CACHE_PAGE_SIZES.map((pageSize) => writePagesForSize(env, typedItems, pageSize, type));
-    })
-  ]);
-}
-
-type CacheMeta = {
-  pageSize: number;
-  total: number;
-  totalPages: number;
-  refreshedAt: string;
-};
-
-async function writePagesForSize(
-  env: Env,
-  items: ApiResource[],
-  pageSize: number,
-  type: number | null
-): Promise<void> {
-  const total = items.length;
+function toPageResponse(rows: ResourceRow[], page: number, pageSize: number, total: number): unknown {
   const totalPages = Math.max(1, Math.ceil(total / pageSize));
-  const pageWrites: Promise<void>[] = [];
-
-  for (let page = 1; page <= totalPages; page += 1) {
-    const start = (page - 1) * pageSize;
-    const body = {
-      items: items.slice(start, start + pageSize),
-      pagination: {
-        page,
-        pageSize,
-        total,
-        totalPages,
-        hasNext: page < totalPages,
-        hasPrev: page > 1
-      }
-    };
-
-    pageWrites.push(
-      env.CACHE.put(pageCacheKey(type, page, pageSize), JSON.stringify(body), {
-        expirationTtl: CACHE_TTL_SECONDS
-      })
-    );
-  }
-
-  await Promise.all([
-    env.CACHE.put(
-      metaCacheKey(type, pageSize),
-      JSON.stringify({ pageSize, total, totalPages, refreshedAt: new Date().toISOString() }),
-      { expirationTtl: CACHE_TTL_SECONDS }
-    ),
-    ...pageWrites
-  ]);
+  return {
+    items: rows.map(toApiResource),
+    pagination: {
+      page,
+      pageSize,
+      total,
+      totalPages,
+      hasNext: page < totalPages,
+      hasPrev: page > 1
+    }
+  };
 }
 
 async function readResourceInput(request: Request): Promise<ResourceInput> {
@@ -488,18 +469,6 @@ function parseJson(value: string | null): JsonValue {
 
 function stringifyJson(value: JsonValue): string {
   return JSON.stringify(value);
-}
-
-function pageCacheKey(type: number | null, page: number, pageSize: number): string {
-  return `resources:${typeKey(type)}:page:${pageSize}:${page}`;
-}
-
-function metaCacheKey(type: number | null, pageSize: number): string {
-  return `resources:${typeKey(type)}:meta:${pageSize}`;
-}
-
-function typeKey(type: number | null): string {
-  return type === null ? "all" : `type:${type}`;
 }
 
 function emptyPage(page: number, pageSize: number, total: number, totalPages: number): unknown {
