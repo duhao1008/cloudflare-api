@@ -176,6 +176,10 @@ function requireAuth(request: Request, env: Env): Response | null {
 }
 
 async function listResources(url: URL, env: Env): Promise<Response> {
+  if ((url.searchParams.get("keyword") ?? "").trim()) {
+    return searchResources(url, env);
+  }
+
   const page = parsePositiveInt(url.searchParams.get("page"), 1);
   const pageSize = DEFAULT_PAGE_SIZE;
   const type = parseOptionalInt(url.searchParams.get("type"));
